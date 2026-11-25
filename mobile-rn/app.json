@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "TouchGrass RN",
+    "slug": "touchgrass",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.touchgrass.touchgrassrn",
+      "permissions": ["INTERNET", "CAMERA", "RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_SYSTEM_EXEMPTED"]
+    },
+    "plugins": ["expo-av", "expo-image-picker", "./plugins/withTouchGrassAndroid"],
+    "extra": {
+      "supabaseUrl": "https://ymhqwucexknvvmxwtvgh.supabase.co",
+      "supabasePublishableKey": "sb_publishable_zY-wY2WIQAf88suVMaOxCQ_D7Xw5vJz"
+    }
+  }
+}
