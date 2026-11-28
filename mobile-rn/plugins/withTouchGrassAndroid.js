@@ -3,6 +3,8 @@ const path = require('path');
 const { withAndroidManifest, withDangerousMod, withMainApplication } = require('@expo/config-plugins');
 
 module.exports = function withTouchGrassAndroid(config) {
+  // Copy Kotlin service templates and Android resources into Expo's generated project.
+  // The templates live beside this plugin so a clean prebuild can recreate them.
   config = withDangerousMod(config, ['android', async mod => {
     const root = mod.modRequest.projectRoot;
     const kotlinDir = path.join(root, 'android/app/src/main/java/com/touchgrass/touchgrassrn');
@@ -29,6 +31,7 @@ module.exports = function withTouchGrassAndroid(config) {
       }
       fs.writeFileSync(sourcePath, contents);
     }
+    // Rewrite the source package name for the separate React Native application ID.
     for (const file of ['TouchGrassAndroidModule.kt', 'TouchGrassPackage.kt']) {
       const contents = fs.readFileSync(path.join(__dirname, file), 'utf8').replace(/^package com\.touchgrass\.touchgrass\s*$/m, 'package com.touchgrass.touchgrassrn');
       fs.writeFileSync(path.join(kotlinDir, file), contents);
@@ -50,6 +53,7 @@ module.exports = function withTouchGrassAndroid(config) {
     fs.writeFileSync(path.join(valuesDir, 'touchgrass_strings.xml'), '<resources><string name="app_blocking_accessibility_label">TouchGrass app blocking</string><string name="app_blocking_accessibility_description">Detects when selected distracting apps are open so TouchGrass can pause them. It does not read screen content.</string></resources>');
     return mod;
   }]);
+  // Register required permissions and declare both native Android services.
   config = withAndroidManifest(config, mod => {
     const manifest = mod.modResults.manifest;
     const app = manifest.application[0];
@@ -62,6 +66,7 @@ module.exports = function withTouchGrassAndroid(config) {
     if (!services.some(s => s.$['android:name'] === '.AppBlockingAccessibilityService')) services.push({ $: { 'android:name': '.AppBlockingAccessibilityService', 'android:exported': 'true', 'android:label': '@string/app_blocking_accessibility_label', 'android:permission': 'android.permission.BIND_ACCESSIBILITY_SERVICE' }, 'intent-filter': [{ action: [{ $: { 'android:name': 'android.accessibilityservice.AccessibilityService' } }] }], 'meta-data': [{ $: { 'android:name': 'android.accessibilityservice', 'android:resource': '@xml/app_blocking_accessibility_service' } }] });
     return mod;
   });
+  // Add the manually written ReactPackage to Expo's generated MainApplication class.
   config = withMainApplication(config, mod => {
     let source = mod.modResults.contents;
     source = source.replace(/^import com\.touchgrass\.touchgrass\.TouchGrassPackage\s*\n/gm, '');

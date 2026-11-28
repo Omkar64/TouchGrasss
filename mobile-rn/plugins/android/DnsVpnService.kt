@@ -4,6 +4,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -36,6 +38,7 @@ class DnsVpnService : VpnService() {
     private val worker = Executors.newSingleThreadExecutor()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The native bridge sends explicit start/stop actions; ignore unrelated restarts.
         when (intent?.action) {
             ACTION_STOP -> stopTunnel()
             ACTION_START -> if (!active) startTunnel()
@@ -45,6 +48,7 @@ class DnsVpnService : VpnService() {
 
     private fun startTunnel() {
         try {
+            // Route only the synthetic DNS address into this VPN; ordinary app packets bypass it.
             val descriptor = Builder()
                 .setSession("TouchGrass DNS filter")
                 .setMtu(1500)
@@ -70,6 +74,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun promoteToForeground() {
+        // Android requires a visible ongoing notification for a running VPN foreground service.
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Grounded Mode", NotificationManager.IMPORTANCE_LOW))
@@ -107,6 +112,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun readDnsPackets(descriptor: ParcelFileDescriptor) {
+        // Read raw IPv4 packets from the VPN descriptor and write a DNS reply packet for each query.
         val input = FileInputStream(descriptor.fileDescriptor)
         val output = FileOutputStream(descriptor.fileDescriptor)
         val buffer = ByteArray(32767)
@@ -123,6 +129,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun handleIpv4UdpDns(packet: ByteArray): ByteArray? {
+        // This prototype handles IPv4 UDP DNS only; malformed and unsupported packets are ignored.
         if (packet.size < 28 || packet[0].toInt() ushr 4 != 4) return null
         val ipHeaderLength = (packet[0].toInt() and 0x0f) * 4
         if (ipHeaderLength < 20 || packet.size < ipHeaderLength + 8 || packet[9].toInt() and 0xff != 17) return null
@@ -140,6 +147,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun isBlockedDomain(domain: String): Boolean {
+        // Match exact domains and their subdomains, then honor any approved time window for that app.
         val key = when {
             domain == "instagram.com" || domain.endsWith(".instagram.com") -> "instagram"
             domain == "tiktok.com" || domain.endsWith(".tiktok.com") -> "tiktok"
@@ -159,25 +167,46 @@ class DnsVpnService : VpnService() {
     }
 
     private fun forwardToResolver(query: ByteArray): ByteArray? {
-        return try {
-            DatagramSocket().use { socket ->
-                if (!protect(socket)) return null
-                socket.soTimeout = 2500
-                val resolver = InetAddress.getByName("1.1.1.1")
-                socket.send(DatagramPacket(query, query.size, resolver, 53))
-                val response = ByteArray(4096)
-                val reply = DatagramPacket(response, response.size)
-                socket.receive(reply)
-                response.copyOf(reply.length)
+        // Discover the physical network's DNS servers, then use a public resolver as a fallback.
+        val resolverAddresses = linkedSetOf<InetAddress>()
+        try {
+            val connectivity = getSystemService(ConnectivityManager::class.java)
+            // The active network is the VPN itself. Find physical internet
+            // networks so protected sockets can use their configured DNS.
+            for (network in connectivity.allNetworks) {
+                val capabilities = connectivity.getNetworkCapabilities(network) ?: continue
+                if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+                    !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+                connectivity.getLinkProperties(network)?.dnsServers?.let(resolverAddresses::addAll)
             }
-        } catch (_: SocketTimeoutException) {
-            null
-        } catch (_: Exception) {
-            null
+        } catch (_: Exception) { }
+        // Keep a public fallback for networks whose advertised resolver is not
+        // reachable from a protected socket.
+        resolverAddresses.add(InetAddress.getByName("1.1.1.1"))
+
+        for (resolver in resolverAddresses) {
+            try {
+                DatagramSocket().use { socket ->
+                    if (protect(socket)) {
+                        socket.soTimeout = 1800
+                        socket.send(DatagramPacket(query, query.size, resolver, 53))
+                        val response = ByteArray(4096)
+                        val reply = DatagramPacket(response, response.size)
+                        socket.receive(reply)
+                        if (reply.length >= 12) return response.copyOf(reply.length)
+                    }
+                }
+            } catch (_: SocketTimeoutException) {
+                // Try the next network resolver or the public fallback.
+            } catch (_: Exception) {
+                // Network changes can invalidate a resolver while the VPN runs.
+            }
         }
+        return null
     }
 
     private fun questionName(message: ByteArray): String? {
+        // DNS question names are a sequence of length-prefixed labels starting at byte 12.
         if (message.size < 17 || u16(message, 4) < 1) return null
         val labels = mutableListOf<String>()
         var cursor = 12
@@ -195,6 +224,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun blockedResponse(query: ByteArray): ByteArray? {
+        // Return NXDOMAIN while preserving the original question so the client can match the reply.
         val nameEnd = questionEnd(query) ?: return null
         val response = query.copyOfRange(0, nameEnd)
         response[2] = (response[2].toInt() or 0x80).toByte() // response
@@ -217,6 +247,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun udpReply(request: ByteArray, ipLength: Int, dns: ByteArray): ByteArray {
+        // Reverse the packet's source/destination addresses and ports to construct the response.
         val udpLength = 8 + dns.size
         val response = ByteArray(ipLength + udpLength)
         response[0] = ((4 shl 4) or (ipLength / 4)).toByte()
@@ -238,6 +269,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun checksum(bytes: ByteArray, offset: Int, length: Int): Int {
+        // IPv4 checksums use one's-complement addition over 16-bit words.
         var sum = 0L
         var i = offset
         while (i < offset + length) {
@@ -259,6 +291,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        // Close the descriptor and clear persisted/foreground state on user stop or failure.
         active = false
         isActive = false
         try { tunnel?.close() } catch (_: Exception) { }
@@ -279,6 +312,7 @@ class DnsVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        // Release the packet worker and any descriptor even if Android destroys the service directly.
         active = false
         isActive = false
         try { tunnel?.close() } catch (_: Exception) { }

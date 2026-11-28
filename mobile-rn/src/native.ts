@@ -1,7 +1,7 @@
 import { NativeModules, Platform } from 'react-native';
 
-// Implemented by the Android Kotlin bridge. Keeping the JS API typed makes the
-// app usable while the generated Android project is being wired to the module.
+// This is the JavaScript contract for TouchGrassAndroidModule.kt.
+// Keep the return shapes in sync with the values resolved by the Kotlin Promise methods.
 type FocusProgress = {
   sessionStartMillis: number;
   sessionTargetMillis: number;
@@ -26,8 +26,11 @@ type TouchGrassNative = {
 };
 
 const bridge = NativeModules.TouchGrassAndroid as TouchGrassNative | undefined;
-const unavailable = async (): Promise<never> => { throw new Error('Android focus services are not connected in this React Native build yet.'); };
+// Expo Go and non-Android builds do not contain this project-specific native module.
+const unavailable = async (): Promise<never> => { throw new Error('TouchGrass native Android services are missing from this build. Install the React Native development build with `npx expo run:android`; Expo Go does not include the native bridge.'); };
 
+// Centralize native calls so screens/hooks do not access NativeModules directly.
+// Optional chaining gives callers a clear rejection instead of an undefined-method crash.
 export const nativeFocus = {
   available: Platform.OS === 'android' && !!bridge,
   status: () => bridge?.status() ?? unavailable(),

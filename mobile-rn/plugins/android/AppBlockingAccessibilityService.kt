@@ -38,6 +38,7 @@ class AppBlockingAccessibilityService : AccessibilityService() {
     private val windowManager by lazy { getSystemService(WINDOW_SERVICE) as WindowManager }
 
     override fun onServiceConnected() {
+        // Subscribe only to foreground-window changes; the service does not inspect window contents.
         serviceInfo = serviceInfo.apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
@@ -57,6 +58,7 @@ class AppBlockingAccessibilityService : AccessibilityService() {
             return
         }
 
+        // Only package names in this allowlist trigger the full-screen blocking overlay.
         val appName = blockedPackages[foregroundPackage]
         if (appName != null) {
             mainHandler.removeCallbacks(dismissOverlay)
@@ -85,6 +87,7 @@ class AppBlockingAccessibilityService : AccessibilityService() {
         .getBoolean(KEY_APP_BLOCKING_ENABLED, false)
 
     private fun hasActivePass(app: String): Boolean {
+        // Translate Android package names to the grant keys shared with the VPN and React Native code.
         val key = when (app) {
             "com.instagram.android" -> "instagram"
             "com.zhiliaoapp.musically" -> "tiktok"
@@ -104,6 +107,7 @@ class AppBlockingAccessibilityService : AccessibilityService() {
     }
 
     private fun showOverlay(appName: String) {
+        // Build a system-level accessibility overlay; if unavailable, send the user to Home instead.
         if (overlay != null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) performGlobalAction(GLOBAL_ACTION_HOME)
             return
@@ -158,6 +162,7 @@ class AppBlockingAccessibilityService : AccessibilityService() {
         content.addView(homeButton, buttonParams())
         root.addView(content, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
 
+        // Accessibility overlays are permitted without drawing over other apps permission.
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         } else {
@@ -180,6 +185,7 @@ class AppBlockingAccessibilityService : AccessibilityService() {
     }
 
     private fun openTouchGrass() {
+        // Remove the blocker before bringing the main app forward so it can request a Gatekeeper pass.
         removeOverlay()
         packageManager.getLaunchIntentForPackage(packageName)?.let { intent ->
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -188,6 +194,7 @@ class AppBlockingAccessibilityService : AccessibilityService() {
     }
 
     private fun removeOverlay() {
+        // This can be called from several lifecycle paths, so removal is intentionally idempotent.
         overlay?.let { view ->
             try { windowManager.removeView(view) } catch (_: Exception) { }
         }
@@ -208,5 +215,6 @@ class AppBlockingAccessibilityService : AccessibilityService() {
         cornerRadius = dp(16).toFloat()
     }
 
+    // Convert density-independent layout values into the device's actual pixel units.
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }

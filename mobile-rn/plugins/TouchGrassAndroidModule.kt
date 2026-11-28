@@ -12,21 +12,25 @@ import com.facebook.react.bridge.*
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** React Native Promise API for VPN, Accessibility, grants, and local focus timing. */
 class TouchGrassAndroidModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context), ActivityEventListener {
     private var vpnPromise: Promise? = null
     private val handler = Handler(Looper.getMainLooper())
     init { context.addActivityEventListener(this) }
     override fun getName() = "TouchGrassAndroid"
 
+    // VPN status is process state owned by DnsVpnService.
     @ReactMethod fun status(promise: Promise) = promise.resolve(DnsVpnService.isActive)
     @ReactMethod fun start(promise: Promise) {
         if (vpnPromise != null) return promise.reject("request_in_progress", "A VPN permission request is already open.")
         val activity = context.currentActivity ?: return promise.reject("activity_unavailable", "TouchGrass needs an open screen to request VPN permission.")
         vpnPromise = promise
+        // Android requires the user to approve VPN use before the service can start.
         val intent = VpnService.prepare(context)
         if (intent == null) beginVpn() else activity.startActivityForResult(intent, VPN_REQUEST)
     }
     @ReactMethod fun stop(promise: Promise) {
+        // Stop the service and update its persisted flag so the next launch shows the right state.
         val intent = Intent(context, DnsVpnService::class.java).setAction(DnsVpnService.ACTION_STOP)
         context.startService(intent)
         context.getSharedPreferences(DnsVpnService.PREFS, 0).edit().putBoolean(DnsVpnService.KEY_RUNNING, false).apply()
@@ -45,11 +49,13 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         } catch (e: Exception) { vpnPromise?.reject("vpn_start_failed", e.message, e); vpnPromise = null }
     }
     private fun waitForVpn(remaining: Int) {
+        // Resolve the JS Promise only after the service reports active; fail after about four seconds.
         if (DnsVpnService.isActive) { vpnPromise?.resolve(true); vpnPromise = null }
         else if (remaining <= 0) { vpnPromise?.reject("vpn_start_timeout", "Grounded Mode did not start. Try again."); vpnPromise = null }
         else handler.postDelayed({ waitForVpn(remaining - 1) }, 100)
     }
 
+    // Accessibility permission is owned by Android Settings; this reports permission and app toggle separately.
     @ReactMethod fun appBlockingStatus(promise: Promise) {
         val enabledServices = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
         val cmp = ComponentName(context, AppBlockingAccessibilityService::class.java)
@@ -58,6 +64,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         promise.resolve(Arguments.createMap().apply { putBoolean("accessibilityEnabled", access); putBoolean("blockingEnabled", access && on) })
     }
     @ReactMethod fun openAppBlockingSettings(promise: Promise) { try { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); promise.resolve(true) } catch (e: Exception) { promise.reject("settings_unavailable", e.message, e) } }
+    // Never persist the enabled flag until Android confirms the user granted Accessibility access.
     @ReactMethod fun setAppBlockingEnabled(enabled: Boolean, promise: Promise) {
         val services = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
         val cmp = ComponentName(context, AppBlockingAccessibilityService::class.java)
@@ -72,6 +79,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
      * every approved pass interval, even after the grant has expired or the app
      * was closed while the pass was running.
      */
+    // Persist active grant windows for enforcement and retain recent history for focus-time accounting.
     @ReactMethod fun setUnlockGrants(grants: ReadableArray, promise: Promise) {
         val prefs = context.getSharedPreferences(DnsVpnService.PREFS, 0)
         val editor = prefs.edit()
@@ -81,6 +89,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         val merged = JSONArray()
         val seen = mutableSetOf<String>()
         fun remember(target: String, usable: Long, expires: Long) {
+            // Ignore invalid/old windows and avoid counting the same approved pass twice.
             if (expires <= usable || expires <= cutoff) return
             val id = "$target:$usable:$expires"
             if (!seen.add(id)) return
@@ -95,6 +104,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
                 }
             } catch (_: Exception) { /* Ignore a corrupt history and rebuild it. */ }
         }
+        // Store future/current windows by app for enforcement, and merge valid windows into history.
         for (i in 0 until grants.size()) {
             val grant = grants.getMap(i) ?: continue
             val key = grant.getString("targetKey") ?: continue
@@ -108,9 +118,11 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         promise.resolve(true)
     }
 
+    // Focus timing is stored on-device per account so an Android process restart does not lose the timer.
     @ReactMethod fun focusProgress(userId: String, promise: Promise) = promise.resolve(progress(userId))
     @ReactMethod fun startFocus(userId: String, durationMinutes: Int, promise: Promise) {
         if (durationMinutes !in 1..1440) return promise.reject("invalid_duration", "Choose a focus duration between 1 and 1,440 minutes.")
+        // A focus session may start only when the VPN or Accessibility blocker is active.
         val blockingPrefs = context.getSharedPreferences(DnsVpnService.PREFS, 0)
         val enabledServices = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
         val component = ComponentName(context, AppBlockingAccessibilityService::class.java)
@@ -132,6 +144,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         val duration = durationMillis(prefs)
         val now = System.currentTimeMillis()
         var elapsed = 0L
+        // Approved pass intervals pause the focus clock; only reaching the adjusted target earns credit.
         val completed = start > 0L && duration > 0L && complete && (now - start - pausedMillis(start, now)) >= duration
         if (start > 0) {
             elapsed = ((now - start - pausedMillis(start, now)) / 1000L).coerceIn(0L, 86400L)
@@ -139,6 +152,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         }
         promise.resolve(Arguments.createMap().apply { putDouble("durationSeconds", elapsed.toDouble()); putBoolean("completed", completed) })
     }
+    // Keep each account's local timer isolated in its own preference file.
     private fun focusPrefs(userId: String) = context.getSharedPreferences("focus_session_$userId", 0)
     private fun durationMillis(prefs: android.content.SharedPreferences): Long {
         val stored = prefs.getLong("focus_duration_millis", 0L)
@@ -148,6 +162,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         return if (start > 0L && target > start) target - start else 0L
     }
     private fun grantWindows(): List<Pair<Long, Long>> {
+        // Convert the JSON history into validated [usable, expires) time intervals.
         val prefs = context.getSharedPreferences(DnsVpnService.PREFS, 0)
         val raw = prefs.getString(GRANT_HISTORY_KEY, null) ?: return emptyList()
         return try {
@@ -162,6 +177,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
     }
     /** Total approved-pass time that overlapped [start, now], merging overlaps. */
     private fun pausedMillis(start: Long, now: Long): Long {
+        // Clip each grant to the session range, sort them, then merge overlaps before summing.
         val clipped = grantWindows()
             .map { (usable, expires) -> maxOf(start, usable) to minOf(now, expires) }
             .filter { it.second > it.first }
@@ -182,6 +198,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         return total
     }
     private fun progress(userId: String): WritableMap {
+        // Convert wall-clock time into elapsed/remaining values after subtracting approved-pass time.
         val prefs = focusPrefs(userId)
         val start = prefs.getLong("focus_start_millis", 0L)
         val duration = durationMillis(prefs)
@@ -204,6 +221,7 @@ class TouchGrassAndroidModule(private val context: ReactApplicationContext) : Re
         }
     }
     companion object {
+        // Shared constants must match the request code, grant-history key, and app keys used by JS/services.
         private const val VPN_REQUEST = 7124
         private const val GRANT_HISTORY_KEY = "grant_windows"
         private const val GRANT_HISTORY_MILLIS = 24L * 60L * 60L * 1000L

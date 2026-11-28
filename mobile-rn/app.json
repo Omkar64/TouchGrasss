@@ -7,12 +7,27 @@
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.touchgrass.touchgrassrn",
-      "permissions": ["INTERNET", "CAMERA", "RECORD_AUDIO", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_SYSTEM_EXEMPTED"]
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
-    "plugins": ["expo-av", "expo-image-picker", "./plugins/withTouchGrassAndroid"],
+    "plugins": [
+      "expo-av",
+      "expo-image-picker",
+      "./plugins/withTouchGrassAndroid"
+    ],
     "extra": {
       "supabaseUrl": "https://ymhqwucexknvvmxwtvgh.supabase.co",
-      "supabasePublishableKey": "sb_publishable_zY-wY2WIQAf88suVMaOxCQ_D7Xw5vJz"
+      "supabasePublishableKey": "sb_publishable_zY-wY2WIQAf88suVMaOxCQ_D7Xw5vJz",
+      "eas": {
+        "projectId": "f6733689-ab93-413a-b7a7-91d44aaa48d3"
+      }
     }
   }
 }
